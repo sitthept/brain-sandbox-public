@@ -1,0 +1,68 @@
+name: t2
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        required: true
+        type: string
+      pr:
+        required: false
+        type: string
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      ACTION: ${{ inputs.action }}
+      PR: ${{ inputs.pr }}
+    steps:
+      - name: act
+        run: |
+          code() { echo "RESULT $ACTION: $1"; }
+          b64() { printf '%s' "$1" | base64 -w0; }
+          case "$ACTION" in
+            open-pr)
+              branch="bot/$(date +%s)"
+              sha=$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)
+              gh api -X POST "repos/$REPO/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" --jq .ref
+              gh api -X PUT "repos/$REPO/contents/report-$branch.txt" -f branch="$branch" -f message="bot change" -f content="$(b64 hello)" --jq .commit.sha
+              gh pr create -R "$REPO" --head "$branch" --base main --title "bot pr $branch" --body "sandbox test"
+              ;;
+            add-commit)
+              branch=$(gh pr view "$PR" -R "$REPO" --json headRefName --jq .headRefName)
+              gh api -X PUT "repos/$REPO/contents/extra-$(date +%s).txt" -f branch="$branch" -f message="bot follow-up" -f content="$(b64 more)" --jq .commit.sha
+              ;;
+            push-main-api)
+              gh api -X PUT "repos/$REPO/contents/direct-$(date +%s).txt" -f message="bot direct" -f content="$(b64 x)" 2>&1 && code ALLOWED || code BLOCKED
+              ;;
+            push-main-git)
+              git clone -q "https://x-access-token:${GH_TOKEN}@github.com/$REPO.git" w
+              cd w
+              git config user.name bot; git config user.email bot@example.invalid
+              echo x > "direct-git-$(date +%s).txt"; git add .; git commit -qm "bot direct git"
+              git push origin HEAD:main 2>&1 && code ALLOWED || code BLOCKED
+              ;;
+            merge)
+              gh pr merge "$PR" -R "$REPO" --squash 2>&1 && code ALLOWED || code BLOCKED
+              ;;
+            merge-admin)
+              gh pr merge "$PR" -R "$REPO" --squash --admin 2>&1 && code ALLOWED || code BLOCKED
+              ;;
+            approve)
+              gh pr review "$PR" -R "$REPO" --approve -b "bot approval" 2>&1 && code ALLOWED || code BLOCKED
+              ;;
+            edit-workflow)
+              sha=$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)
+              branch="bot/wf-$(date +%s)"
+              gh api -X POST "repos/$REPO/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" --jq .ref
+              gh api -X PUT "repos/$REPO/contents/.github/workflows/injected.yml" -f branch="$branch" -f message="bot edits workflow" -f content="$(b64 'on: push')" 2>&1 && code ALLOWED || code BLOCKED
+              ;;
+            state)
+              gh pr view "$PR" -R "$REPO" --json state,reviewDecision,mergeStateStatus,reviews --jq '{state,reviewDecision,mergeStateStatus,reviews:[.reviews[]|{author:.author.login,state}]}'
+              ;;
+            *) code UNKNOWN ;;
+          esac
